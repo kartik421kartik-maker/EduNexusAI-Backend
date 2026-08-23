@@ -19,7 +19,7 @@ def chat():
     try:
         # AI se jawab mangna (Cloud par 1.5-flash hi chalta hai)
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-3.6-flash',
             contents=user_message
         )
         print("[EduNexus AI] Sent response back to frontend!")
