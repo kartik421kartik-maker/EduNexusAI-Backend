@@ -8,19 +8,14 @@ from google.genai import errors as genai_errors
 app = Flask(__name__)
 CORS(app)
 
-# [SYSTEM] Multiple FREE API keys work together as a fallback pool.
-# Add GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3
-# (and as many as you want) to Render Environment Variables.
-# Each separate Google AI Studio project has its own independent
-# free daily quota. When one key's quota is exhausted, the code
-# automatically tries the next available key.
-# If only GEMINI_API_KEY is set, it will still work normally.
+# [SYSTEM] Multiple FREE API keys fallback pool
 _raw_keys = [
     os.environ.get("GEMINI_API_KEY"),
     os.environ.get("GEMINI_API_KEY_2"),
     os.environ.get("GEMINI_API_KEY_3"),
 ]
 
+# Create clients only for the keys that actually exist in Render
 clients = [genai.Client(api_key=k) for k in _raw_keys if k]
 
 if not clients:
@@ -28,22 +23,17 @@ if not clients:
         "No GEMINI_API_KEY is set in the Environment Variables!"
     )
 
-# gemini-1.5-flash has been retired -- use an explicit current model.
-# Flash-Lite has a separate quota bucket from Flash and is usually
-# more generous on the free tier.
+# Claude ke suggestion wala model jisne limit error theek kiya
 MODEL_NAME = "gemini-3.5-flash-lite"
 
-# [SYSTEM] EduNexus AI personality + answer LENGTH is controlled here.
+# [SYSTEM] Smart Prompt: Short by default, LONG only when asked!
 SYSTEM_PROMPT = (
     "You are EduNexus AI, a friendly study assistant for Indian Class 12 students "
     "(Physics, Chemistry, Maths, Computer Science, English). "
-    "Keep answers SHORT and clear by default -- around 3 to 6 short sentences, "
-    "or a few bullet points. Do not write long essays. "
-    "Only give a longer, detailed, step-by-step explanation if the student clearly "
-    "asks for it (e.g. 'explain in detail', 'step by step', 'derive it', etc.). "
-    "Use simple, exam-friendly language."
+    "Keep answers SHORT and clear by default -- around 3 to 6 short sentences. "
+    "HOWEVER, if the student explicitly asks for a 'sample paper', 'detailed explanation', "
+    "or 'derivation', you MUST provide the complete, detailed, and long response without cutting it short."
 )
-
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -60,7 +50,7 @@ def chat():
                 contents=user_message,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
-                    max_output_tokens=600,   # Cap very long responses here
+                    max_output_tokens=2500,  # 🚀 BADA DABBA: Ab sample paper beech me nahi tootega!
                 )
             )
 
@@ -69,31 +59,28 @@ def chat():
 
         except genai_errors.ClientError as e:
             if getattr(e, "code", None) == 429:
-                # This key's free quota is exhausted -- try the next key
-                print(
-                    f"[QUOTA HIT on key #{i}] "
-                    "trying next key if available..."
-                )
+                # Limit cross ho gayi, agli key try karo
+                print(f"[QUOTA HIT on key #{i}] trying next key if available...")
                 last_error = e
                 continue
 
+            # Koi aur client error
             print(f"[ERROR DETAILS]: {e}")
             return jsonify({
-                "reply": "Oops! Something went wrong. Please try again later!"
+                "reply": "Oops! Something went wrong with the connection. Please try again! ✦"
             })
 
         except Exception as e:
+            # Server crash ya timeout
             print(f"[ERROR DETAILS]: {e}")
             return jsonify({
-                "reply": "Oops! The AI engine is overloaded. Please try again later!"
+                "reply": "Whoops! The AI engine is experiencing high traffic right now. Please try again in a few seconds! ✦"
             })
 
-    # All keys have exhausted their free daily quota
+    # Agar saari keys ki daily limit khatam ho jaye
     print(f"[ALL KEYS EXHAUSTED]: {last_error}")
-
     return jsonify({
-        "reply": "⏳ The AI engine's free limit has been exhausted for today. "
-                 "Please try again tomorrow or after some time!"
+        "reply": "⏳ The AI engine's free limit has been exhausted for today. Please try again tomorrow or after some time! ✦"
     })
 
 
