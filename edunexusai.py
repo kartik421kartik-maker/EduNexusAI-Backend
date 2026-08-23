@@ -12,24 +12,23 @@ client = genai.Client(api_key=api_key)
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    # Website se question lena
     user_message = request.json.get('message')
     print(f"\n[USER QUERY RECEIVED]: {user_message}")
-
+    
     try:
-        # AI se jawab mangna (Cloud par 1.5-flash hi chalta hai)
+        # AI se jawab mangna
         response = client.models.generate_content(
             model='gemini-3.6-flash',
             contents=user_message
         )
+        answer = response.text
         print("[EduNexus AI] Sent response back to frontend!")
-        return jsonify({"reply": response.text})
-
-    except Exception as e:
-        # Agar error aayi toh exact reason website par dikhega
-        print(f"[ERROR DETAILS]: {e}")
-        return jsonify({"reply": f"Oops! Engine overload ho gaya. Error: {e}"})
-
+        return jsonify({"reply": answer})
+        
+   except Exception as e:
+        print(f"[ERROR]: {str(e)}")
+        friendly_error = "Whoops! The AI engine is experiencing high traffic right now. Please try again in a few seconds! ✦"
+        return jsonify({"reply": friendly_error})
 if __name__ == '__main__':
     print("--------------------------------------------------")
     print("[SYSTEM] EduNexus AI LIVE SERVER BOOTING...")
