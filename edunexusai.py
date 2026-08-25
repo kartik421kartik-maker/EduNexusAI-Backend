@@ -1,4 +1,5 @@
 import os
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
@@ -8,97 +9,107 @@ from google.genai import errors as genai_errors
 app = Flask(__name__)
 CORS(app)
 
-# [SYSTEM] Multiple FREE API keys fallback pool
+# [SYSTEM] Hide Webhook in Backend for Security
+DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1540079598224809984/oDDtB_T22-8lQK3R1HLTk_L_1Fv6IW-atoHBjo7zq0Wc4BQpVr6Hor2ssAtH7RxXP_fA"
+
 _raw_keys = [
     os.environ.get("GEMINI_API_KEY"),
     os.environ.get("GEMINI_API_KEY_2"),
     os.environ.get("GEMINI_API_KEY_3"),
 ]
 
-# Create clients only for the keys that actually exist in Render
 clients = [genai.Client(api_key=k) for k in _raw_keys if k]
 
 if not clients:
-    raise RuntimeError(
-        "No GEMINI_API_KEY is set in the Environment Variables!"
-    )
+    raise RuntimeError("No GEMINI_API_KEY is set in the Environment Variables!")
 
-# Claude ke suggestion wala model jisne limit error theek kiya
-MODEL_NAME = "gemini-3.5-flash-lite"
+MODEL_NAME = "gemini-2.5-flash"
 
-# [SYSTEM] Smart Prompt: Short by default, LONG only when asked!
-# [SYSTEM] Smart & Natural AI Prompt
 SYSTEM_PROMPT = (
-    "You are EduNexus AI, an expert study assistant for Indian Class 12 students "
+    "You are EduNexus AI, powered by the KX Neural Core, a friendly and extremely smart study assistant for Indian Class 12 students "
     "(Physics, Chemistry, Maths, Computer Science, English). "
-    "Adapt your response length and style NATURALLY based on the user's query: "
-    "1. For concepts, definitions, or general questions: Provide a simple explanation followed by 1 or 2 practical examples. Keep it concise. "
-    "2. For sample papers, mock tests, or full derivations: Provide the COMPLETE and detailed response immediately. "
-    "CRITICAL RULE: If a user asks for a sample paper or questions, DO NOT give a blueprint, structure, or outline. "
-    "DO NOT ask for permission like 'Let me know if you want the actual questions'. "
-    "YOU MUST GENERATE THE FULL LIST OF ACTUAL QUESTIONS IMMEDIATELY."
+    "Keep answers SHORT and clear by default -- around 3 to 6 short sentences, "
+    "or a few bullet points. Do not write long essays. "
+    "If the user asks for a Custom Quiz, act as a strict examiner, wait for their answers, "
+    "evaluate them in the next turn, and give them a score out of the total questions. "
+    "Use simple, exam-friendly language."
 )
+
+# [SYSTEM] KX Core Conversation Memory Store
+conversation_history = {}
+
+def send_discord_alert(username):
+    """Securely sends login alerts to Discord from Backend"""
+    try:
+        data = {"content": f"🚨 **BINGO!** New User Logged In!\n🧑‍🎓 **Name:** {username}\n💻 **Action:** Launched EduNexus AI Dashboard 🚀"}
+        requests.post(DISCORD_WEBHOOK_URL, json=data, timeout=5)
+    except Exception as e:
+        print(f"Discord Alert Failed: {e}")
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    # Receive the question from the website
-    user_message = request.json.get('message')
-    print(f"\n[USER QUERY RECEIVED]: {user_message}")
+    data = request.json
+    user_message = data.get('message')
+    session_id = data.get('session_id', 'default_session')
+    user_name = data.get('user_name', 'Student')
+    
+    print(f"\n[USER QUERY RECEIVED from {user_name}]: {user_message}")
+
+    # Track new user securely on backend based on first message
+    if session_id not in conversation_history:
+        send_discord_alert(user_name)
+        # Initialize memory for new session
+        conversation_history[session_id] = [{"role": "user", "parts": [{"text": f"My name is {user_name}. Please remember it."}]}, {"role": "model", "parts": [{"text": f"Hello {user_name}, I am KX Neural Core. I will remember your name and our conversation history."}]}]
+
+    # Append new user message to memory
+    conversation_history[session_id].append({"role": "user", "parts": [{"text": user_message}]})
+    
+    # Keep memory size manageable (last 10 interactions) to avoid token limits
+    if len(conversation_history[session_id]) > 10:
+        conversation_history[session_id] = conversation_history[session_id][-10:]
 
     last_error = None
 
     for i, client in enumerate(clients, start=1):
         try:
+            # Pass the entire conversation history instead of just one message
             response = client.models.generate_content(
                 model=MODEL_NAME,
-                contents=user_message,
+                contents=conversation_history[session_id],
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
-                    max_output_tokens=2500,  # 🚀 BADA DABBA: Ab sample paper beech me nahi tootega!
+                    max_output_tokens=600,
                 )
             )
 
-            print(f"[EduNexus AI] Reply sent using key #{i}")
+            # Save AI's response to memory
+            conversation_history[session_id].append({"role": "model", "parts": [{"text": response.text}]})
+            
+            print(f"[KX Neural Core] Reply sent using key #{i}")
             return jsonify({"reply": response.text})
 
         except genai_errors.ClientError as e:
             if getattr(e, "code", None) == 429:
-                # Limit cross ho gayi, agli key try karo
                 print(f"[QUOTA HIT on key #{i}] trying next key if available...")
                 last_error = e
                 continue
-
-            # Koi aur client error
             print(f"[ERROR DETAILS]: {e}")
-            return jsonify({
-                "reply": "Oops! Something went wrong with the connection. Please try again! ✦"
-            })
+            return jsonify({"reply": "Oops! Something went wrong. Please try again later!"})
 
         except Exception as e:
-            # Server crash ya timeout
             print(f"[ERROR DETAILS]: {e}")
-            return jsonify({
-                "reply": "Whoops! The AI engine is experiencing high traffic right now. Please try again in a few seconds! ✦"
-            })
+            return jsonify({"reply": "Oops! The KX Neural Core is overloaded. Please try again later!"})
 
-    # Agar saari keys ki daily limit khatam ho jaye
     print(f"[ALL KEYS EXHAUSTED]: {last_error}")
     return jsonify({
-        "reply": "⏳ The AI engine's free limit has been exhausted for today. Please try again tomorrow or after some time! ✦"
+        "reply": "⏳ The KX Neural Core's free limit has been exhausted for today. Please try again tomorrow!"
     })
-
 
 if __name__ == '__main__':
     print("--------------------------------------------------")
-    print("[SYSTEM] EduNexus AI LIVE SERVER BOOTING...")
+    print("[SYSTEM] KX Neural Core LIVE SERVER BOOTING...")
     print(f"[SYSTEM] {len(clients)} API key(s) loaded in the fallback pool")
-    print("[SYSTEM] Ready to receive frontend requests")
+    print("[SYSTEM] Ready to receive frontend requests with Memory enabled")
     print("--------------------------------------------------")
-
-    # CLOUD FIX: Render requires a dynamic port
     port = int(os.environ.get("PORT", 5000))
-
-    app.run(
-        host='0.0.0.0',
-        port=port
-    )
+    app.run(host='0.0.0.0', port=port)
