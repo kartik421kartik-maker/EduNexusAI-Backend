@@ -18,8 +18,33 @@ CORS(app)
 
 
 # ============================================================
+# CONFIGURATION
+# ============================================================
+
+MODEL_NAME = "gemini-2.5-flash"
+
+SYSTEM_PROMPT = (
+    "You are EduNexus AI, powered by the KX Neural Core, "
+    "a friendly and extremely smart study assistant for Indian Class 12 students "
+    "(Physics, Chemistry, Maths, Computer Science, English). "
+
+    "Keep answers short and clear by default, around 3 to 6 short sentences "
+    "or a few bullet points. Do not write long essays unless the user asks "
+    "for a detailed explanation. "
+
+    "If the user asks for a Custom Quiz, act as a strict examiner. "
+    "Wait for their answers, evaluate them in the next turn, "
+    "and give them a score out of the total questions. "
+
+    "Use simple, exam-friendly language suitable for Class 12 students."
+)
+
+
+# ============================================================
 # DISCORD WEBHOOK
-# IMPORTANT: Keep this in Render Environment Variables
+# IMPORTANT:
+# Never hard-code the webhook URL.
+# Add DISCORD_WEBHOOK_URL in Render Environment Variables.
 # ============================================================
 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -27,13 +52,14 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 # ============================================================
 # GEMINI API KEY POOL
-# Add as many configured keys as you want:
+#
+# Render Environment Variables:
 #
 # GEMINI_API_KEY
 # GEMINI_API_KEY_2
 # GEMINI_API_KEY_3
 #
-# Missing keys are automatically ignored.
+# Empty/missing keys are automatically ignored.
 # ============================================================
 
 _raw_keys = [
@@ -42,44 +68,42 @@ _raw_keys = [
     os.environ.get("GEMINI_API_KEY_3"),
 ]
 
-clients = [
-    genai.Client(api_key=key)
+# Remove empty keys and accidental spaces
+_raw_keys = [
+    key.strip()
     for key in _raw_keys
-    if key
+    if key and key.strip()
 ]
 
 
-if not clients:
-    print("WARNING: Koi GEMINI_API_KEY set nahi hai!")
+# Create Gemini clients
+clients = []
+
+for key in _raw_keys:
+    try:
+        clients.append(
+            genai.Client(api_key=key)
+        )
+    except Exception as e:
+        print(
+            f"[GEMINI CLIENT INIT ERROR]: {str(e)}"
+        )
 
 
 # ============================================================
-# MODEL
+# STARTUP LOGS
 # ============================================================
 
-MODEL_NAME = "gemini-2.5-flash"
-
-
-# ============================================================
-# SYSTEM PROMPT
-# ============================================================
-
-SYSTEM_PROMPT = (
-    "You are EduNexus AI, powered by the KX Neural Core, "
-    "a friendly and extremely smart study assistant for Indian Class 12 students "
-    "(Physics, Chemistry, Maths, Computer Science, English). "
-
-    "Keep answers SHORT and clear by default -- around 3 to 6 short sentences, "
-    "or a few bullet points. Do not write long essays unless the user specifically "
-    "asks for a detailed explanation. "
-
-    "If the user asks for a Custom Quiz, act as a strict examiner, "
-    "wait for their answers, evaluate them in the next turn, "
-    "and give them a score out of the total questions. "
-
-    "Use simple, exam-friendly language. "
-    "Explain difficult concepts in an easy way suitable for Class 12 students."
+print("--------------------------------------------------")
+print("[SYSTEM] EduNexus AI Backend")
+print("[SYSTEM] KX Neural Core")
+print(f"[SYSTEM] Model: {MODEL_NAME}")
+print(f"[SYSTEM] Gemini Keys Loaded: {len(clients)}")
+print(
+    f"[SYSTEM] Discord Webhook: "
+    f"{'CONFIGURED' if DISCORD_WEBHOOK_URL else 'NOT CONFIGURED'}"
 )
+print("--------------------------------------------------")
 
 
 # ============================================================
@@ -90,18 +114,23 @@ conversation_history = {}
 
 
 # ============================================================
-# DISCORD LOGIN ALERT
+# DISCORD ALERT
 # ============================================================
 
 def send_discord_alert(username):
+
     if not DISCORD_WEBHOOK_URL:
-        print("[DISCORD] Webhook configured nahi hai.")
+        print(
+            "[DISCORD] Webhook not configured. "
+            "Skipping alert."
+        )
         return
 
     try:
-        data = {
+
+        payload = {
             "content": (
-                "🚨 **BINGO!** New User Logged In!\n"
+                "🚨 **BINGO! New User Logged In!**\n"
                 f"🧑‍🎓 **Name:** {username}\n"
                 "💻 **Action:** Launched EduNexus AI Dashboard 🚀"
             )
@@ -109,18 +138,63 @@ def send_discord_alert(username):
 
         response = requests.post(
             DISCORD_WEBHOOK_URL,
-            json=data,
+            json=payload,
             timeout=5
         )
 
         if response.status_code not in (200, 204):
+
             print(
-                f"[DISCORD] Webhook Error: "
-                f"{response.status_code} - {response.text}"
+                "[DISCORD ERROR] "
+                f"Status: {response.status_code}"
+            )
+
+            print(
+                f"[DISCORD ERROR BODY] {response.text}"
+            )
+
+        else:
+
+            print(
+                "[DISCORD] Login alert sent successfully."
             )
 
     except Exception as e:
-        print(f"[DISCORD Alert Failed]: {e}")
+
+        print(
+            f"[DISCORD EXCEPTION] {str(e)}"
+        )
+
+
+# ============================================================
+# HOME / HEALTH CHECK
+# ============================================================
+
+@app.route("/", methods=["GET"])
+def home():
+
+    return jsonify({
+        "status": "online",
+        "service": "EduNexus AI",
+        "core": "KX Neural Core",
+        "model": MODEL_NAME,
+        "gemini_keys_loaded": len(clients),
+        "discord_webhook": bool(DISCORD_WEBHOOK_URL)
+    })
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route("/health", methods=["GET"])
+def health():
+
+    return jsonify({
+        "status": "healthy",
+        "model": MODEL_NAME,
+        "gemini_clients": len(clients)
+    })
 
 
 # ============================================================
@@ -138,43 +212,73 @@ def chat():
 
         data = request.get_json(silent=True) or {}
 
-        user_message = data.get("message", "").strip()
-        session_id = data.get(
-            "session_id",
-            "default_session"
-        )
-        user_name = data.get(
-            "user_name",
-            "Student"
+        user_message = str(
+            data.get("message", "")
         ).strip()
 
+        session_id = str(
+            data.get(
+                "session_id",
+                "default_session"
+            )
+        )
+
+        user_name = str(
+            data.get(
+                "user_name",
+                "Student"
+            )
+        ).strip()
+
+
         # ----------------------------------------------------
-        # Basic validation
+        # Validation
         # ----------------------------------------------------
 
         if not user_message:
+
             return jsonify({
                 "reply": "Please enter a message."
             }), 400
 
+
         if not clients:
+
+            print(
+                "[FATAL] No Gemini API clients configured."
+            )
+
             return jsonify({
                 "reply": (
-                    "Gemini API key is not configured on the backend."
+                    "Gemini API is not configured. "
+                    "Please check Render Environment Variables."
                 )
             }), 500
 
+
+        print("")
+        print("==================================================")
         print(
-            f"\n[USER QUERY RECEIVED from {user_name}]: "
-            f"{user_message}"
+            f"[USER] {user_name}"
         )
+        print(
+            f"[SESSION] {session_id}"
+        )
+        print(
+            f"[MESSAGE] {user_message}"
+        )
+        print("==================================================")
 
 
         # ====================================================
-        # CREATE NEW SESSION
+        # CREATE SESSION
         # ====================================================
 
         if session_id not in conversation_history:
+
+            print(
+                f"[SESSION] Creating new session: {session_id}"
+            )
 
             send_discord_alert(user_name)
 
@@ -197,7 +301,7 @@ def chat():
                     parts=[
                         types.Part.from_text(
                             text=(
-                                f"Hello {user_name}, "
+                                f"Hello {user_name}! "
                                 "I am KX Neural Core. "
                                 "I will remember your name "
                                 "and our conversation history."
@@ -226,36 +330,42 @@ def chat():
 
 
         # ====================================================
-        # LIMIT CONVERSATION MEMORY
+        # KEEP ONLY LAST 10 MESSAGES
         # ====================================================
 
         MAX_HISTORY = 10
 
-        if len(conversation_history[session_id]) > MAX_HISTORY:
+        if len(
+            conversation_history[session_id]
+        ) > MAX_HISTORY:
 
             conversation_history[session_id] = (
-                conversation_history[session_id][-MAX_HISTORY:]
+                conversation_history[session_id][
+                    -MAX_HISTORY:
+                ]
             )
 
 
         # ====================================================
-        # TRY ALL GEMINI CLIENTS
+        # TRY EVERY GEMINI KEY
         # ====================================================
 
         last_error = None
 
-        for i, client in enumerate(clients, start=1):
+        for index, client in enumerate(
+            clients,
+            start=1
+        ):
+
+            print("")
+            print(
+                f"[GEMINI] Trying API Key #{index}..."
+            )
 
             try:
 
-                print(
-                    f"[KX Neural Core] "
-                    f"Trying API key #{i}..."
-                )
-
-
                 # ------------------------------------------------
-                # GEMINI GENERATE CONTENT
+                # GENERATE CONTENT
                 # ------------------------------------------------
 
                 response = client.models.generate_content(
@@ -276,18 +386,25 @@ def chat():
 
 
                 # ------------------------------------------------
-                # GET RESPONSE TEXT
+                # GET RESPONSE
                 # ------------------------------------------------
 
                 ai_response_text = (
                     response.text
                     if response.text
-                    else "I could not process that request."
+                    else ""
                 )
 
 
+                if not ai_response_text:
+
+                    raise Exception(
+                        "Gemini returned an empty response."
+                    )
+
+
                 # ------------------------------------------------
-                # SAVE AI RESPONSE
+                # SAVE MODEL RESPONSE
                 # ------------------------------------------------
 
                 conversation_history[
@@ -310,69 +427,94 @@ def chat():
                 # ------------------------------------------------
 
                 print(
-                    f"[KX Neural Core] "
-                    f"Reply sent using key #{i}"
+                    f"[SUCCESS] Gemini API Key #{index} "
+                    f"worked successfully."
                 )
+
+                print(
+                    f"[MODEL] {MODEL_NAME}"
+                )
+
+                print("==================================================")
+                print("")
 
                 return jsonify({
                     "reply": ai_response_text
-                })
+                }), 200
 
 
             except Exception as e:
 
-                print(
-                    f"[KEY #{i} ERROR]: {str(e)}"
-                )
-
                 last_error = e
+
+                error_text = str(e)
+
+                print("")
+                print(
+                    f"[KEY #{index} FAILED]"
+                )
+                print(
+                    f"[ERROR TYPE] {type(e).__name__}"
+                )
+                print(
+                    f"[ERROR] {error_text}"
+                )
+                print("")
 
                 # Try next API key
                 continue
 
 
         # ====================================================
-        # ALL KEYS FAILED
+        # ALL GEMINI KEYS FAILED
         # ====================================================
 
+        print("")
+        print("==================================================")
+        print("[CRITICAL] ALL GEMINI API KEYS FAILED")
         print(
-            f"[ALL KEYS FAILED]: "
-            f"{last_error}"
+            f"[MODEL] {MODEL_NAME}"
         )
+        print(
+            f"[LAST ERROR] {last_error}"
+        )
+        print("==================================================")
+        print("")
 
+
+        # IMPORTANT:
+        # During debugging, return the real error.
+        # Once everything works, you can hide it.
         return jsonify({
             "reply": (
-                "KX Neural Core is temporarily unavailable. "
-                "Please try again in a moment."
-            )
+                "Gemini API Error:\n\n"
+                f"{str(last_error)}"
+            ),
+            "error": True,
+            "model": MODEL_NAME
         }), 503
 
 
+    # ========================================================
+    # BACKEND CRASH
+    # ========================================================
+
     except Exception as e:
 
+        print("")
+        print("==================================================")
+        print("[BACKEND CRASH]")
         traceback.print_exc()
+        print("==================================================")
+        print("")
 
         return jsonify({
             "reply": (
-                f"Backend Crash: {str(e)}"
-            )
-        }), 200
-
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
-
-@app.route("/", methods=["GET"])
-def home():
-
-    return jsonify({
-        "status": "online",
-        "service": "EduNexus AI",
-        "core": "KX Neural Core",
-        "model": MODEL_NAME,
-        "api_keys_configured": len(clients)
-    })
+                "Backend Error:\n\n"
+                f"{str(e)}"
+            ),
+            "error": True
+        }), 500
 
 
 # ============================================================
@@ -381,18 +523,21 @@ def home():
 
 if __name__ == "__main__":
 
-    print("--------------------------------------------------")
-    print("[SYSTEM] KX Neural Core LIVE SERVER BOOTING...")
-    print(f"[SYSTEM] Selected Model: {MODEL_NAME}")
-    print(f"[SYSTEM] API Keys Loaded: {len(clients)}")
-    print("--------------------------------------------------")
-
     port = int(
         os.environ.get(
             "PORT",
             5000
         )
     )
+
+    print("--------------------------------------------------")
+    print("[SYSTEM] KX Neural Core LIVE SERVER BOOTING...")
+    print(f"[SYSTEM] Port: {port}")
+    print(f"[SYSTEM] Model: {MODEL_NAME}")
+    print(
+        f"[SYSTEM] Gemini Clients: {len(clients)}"
+    )
+    print("--------------------------------------------------")
 
     app.run(
         host="0.0.0.0",
