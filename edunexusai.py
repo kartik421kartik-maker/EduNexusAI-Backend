@@ -18,12 +18,13 @@ _raw_keys = [
     os.environ.get("GEMINI_API_KEY_2"),
     os.environ.get("GEMINI_API_KEY_3"),
 ]
+
 clients = [genai.Client(api_key=k) for k in _raw_keys if k]
 
 if not clients:
-    print("WARNING: No GEMINI_API_KEY set!")
+    print("WARNING: Koi GEMINI_API_KEY set nahi hai!")
 
-# 🔥 FIX 1: Claude hallucinated! There is no Gemini 3.5. The correct fast model is 1.5-flash.
+# 🔥 FIX 1: Claude ne galat bola tha. Gemini 3.5 exist nahi karta! Sahi model name 1.5-flash hai.
 MODEL_NAME = "gemini-1.5-flash"
 
 SYSTEM_PROMPT = (
@@ -36,7 +37,6 @@ SYSTEM_PROMPT = (
     "Use simple, exam-friendly language."
 )
 
-# [SYSTEM] KX Core Conversation Memory Store
 conversation_history = {}
 
 def send_discord_alert(username):
@@ -56,21 +56,17 @@ def chat():
         
         print(f"\n[USER QUERY RECEIVED from {user_name}]: {user_message}")
 
-        # Track new user securely on backend based on first message
         if session_id not in conversation_history:
             send_discord_alert(user_name)
-            # 🔥 FIX 2: Using Strict 'types.Content' exactly as Google API wants
             conversation_history[session_id] = [
                 types.Content(role="user", parts=[types.Part.from_text(text=f"My name is {user_name}. Please remember it.")]),
                 types.Content(role="model", parts=[types.Part.from_text(text=f"Hello {user_name}, I am KX Neural Core. I will remember your name and our conversation history.")])
             ]
 
-        # Append new user message to memory
         conversation_history[session_id].append(
             types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
         )
         
-        # Trim memory to keep it lightweight (API Strict Rule: MUST start with 'user')
         if len(conversation_history[session_id]) > 10:
             conversation_history[session_id] = conversation_history[session_id][-10:]
             if conversation_history[session_id][0].role == "model":
@@ -89,7 +85,6 @@ def chat():
                     )
                 )
 
-                # Save AI's response to memory
                 ai_response_text = response.text if response.text else "I could not process that request."
                 conversation_history[session_id].append(
                     types.Content(role="model", parts=[types.Part.from_text(text=ai_response_text)])
@@ -104,12 +99,13 @@ def chat():
                     last_error = e
                     continue
                 
+                # 🔥 FIX 2: Ab agar Model exist nahi karta ya koi aur error aayi, toh seedha woh error dikhayega, fake limit message nahi.
                 print(f"[CLIENT ERROR DETAILS]: {e}")
-                return jsonify({"reply": "Oops! There is an issue with the AI API limit. Please try again."})
+                return jsonify({"reply": f"API Error Details: {str(e)}"})
 
             except Exception as e:
                 print(f"[SERVER ERROR DETAILS]: {e}")
-                return jsonify({"reply": "Oops! The KX Neural Core is overloaded. Please try again."})
+                return jsonify({"reply": f"Server Error: {str(e)}"})
 
         print(f"[ALL KEYS EXHAUSTED]: {last_error}")
         return jsonify({
@@ -117,9 +113,8 @@ def chat():
         })
         
     except Exception as e:
-        # 🔥 FIX 3: Catch ALL Python crashes so Frontend NEVER says "Connection Broken"
         traceback.print_exc()
-        return jsonify({"reply": f"Backend Error Code: {str(e)}"}), 200
+        return jsonify({"reply": f"Backend Crash: {str(e)}"}), 200
 
 if __name__ == '__main__':
     print("--------------------------------------------------")
