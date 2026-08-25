@@ -1,161 +1,118 @@
-"""EduNexus AI Flask backend.
-
-Required Render environment variable:
-    GEMINI_API_KEY=<your Google AI Studio key>
-
-Optional:
-    GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_MODEL, ALLOWED_ORIGINS
-"""
-
-import logging
 import os
-from threading import Lock
-
-from flask import Flask, jsonify, request
+import requests
+import traceback
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from google.genai import types
 
-
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-logger = logging.getLogger("edunexus")
-
 app = Flask(__name__)
+CORS(app)
 
-# For a public GitHub Pages frontend, keep the default '*'.  To restrict it later,
-# set ALLOWED_ORIGINS to a comma-separated list of HTTPS frontend URLs.
-allowed_origins = [
-    origin.strip()
-    for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
-    if origin.strip()
+# [SYSTEM] Hide Webhook in Backend for Security
+DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1540079598224809984/oDDtB_T22-8lQK3R1HLTk_L_1Fv6IW-atoHBjo7zq0Wc4BQpVr6Hor2ssAtH7RxXP_fA"
+
+_raw_keys = [
+    os.environ.get("GEMINI_API_KEY"),
+    os.environ.get("GEMINI_API_KEY_2"),
+    os.environ.get("GEMINI_API_KEY_3"),
 ]
-CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-SYSTEM_PROMPT = """
-You are EduNexus AI, a friendly and academically accurate study assistant for
-Indian Class 12 students. Help with Physics, Chemistry, Mathematics, Computer
-Science, and English. Keep ordinary answers clear and concise. Use exam-friendly
-language, show key steps for numerical problems, and give clean definitions.
+clients = [genai.Client(api_key=k) for k in _raw_keys if k]
 
-If the student requests a custom quiz, act as a strict examiner: provide only
-the requested questions and options first, wait for answers, then mark them and
-explain incorrect answers.
-QUIZ RULE: Whenever the student asks for a quiz, MCQ, test, or questions, act
-as a strict examiner. Generate the requested questions immediately, with four
-options per MCQ. Do not respond with only a heading, note, or subject
-classification. Do not reveal answers until the student submits answers; then
-give marks obtained, marks out of the total, and concise corrections. If a topic
-belongs to another subject, mention the correction in one short sentence and
-still generate the requested quiz.
-""".strip()
+if not clients:
+    print("WARNING: Koi GEMINI_API_KEY set nahi hai!")
 
+# 🔥 FIX 1: Exact working model name. (No 3.5 Fake Model)
+MODEL_NAME = "gemini-1.5-flash"
 
-def configured_keys():
-    """Read non-empty API keys without ever logging their values."""
-    names = ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3")
-    return [os.getenv(name, "").strip() for name in names if os.getenv(name, "").strip()]
+SYSTEM_PROMPT = (
+    "You are EduNexus AI, powered by the KX Neural Core, a friendly and extremely smart study assistant for Indian Class 12 students "
+    "(Physics, Chemistry, Maths, Computer Science, English). "
+    "Keep answers SHORT and clear by default -- around 3 to 6 short sentences, "
+    "or a few bullet points. Do not write long essays. "
+    "If the user asks for a Custom Quiz, act as a strict examiner, wait for their answers, "
+    "evaluate them in the next turn, and give them a score out of the total questions. "
+    "Use simple, exam-friendly language."
+)
 
-
-clients = [genai.Client(api_key=key) for key in configured_keys()]
-
-# In-memory history is enough for a small demo.  It resets whenever Render restarts.
+# 🔥 FIX 2: Memory Store (Ghajini Problem Solved)
 conversation_history = {}
-history_lock = Lock()
-MAX_HISTORY_MESSAGES = 12
 
-
-def to_contents(messages):
-    return [
-        types.Content(
-            role=item["role"],
-            parts=[types.Part.from_text(text=item["text"])],
-        )
-        for item in messages
-    ]
-
-
-def generate_reply(messages):
-    """Try each configured key and return the first usable answer."""
-    errors = []
-
-    for number, client in enumerate(clients, start=1):
-        try:
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=to_contents(messages),
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    max_output_tokens=600,
-                    temperature=0.4,
-                ),
-            )
-            reply = (getattr(response, "text", None) or "").strip()
-            if reply:
-                logger.info("Gemini request succeeded with key #%s", number)
-                return reply
-            raise RuntimeError("Gemini returned no text")
-        except Exception as exc:  # Try the next key without exposing provider details.
-            logger.warning("Gemini key #%s failed: %s", number, exc)
-            errors.append(f"key #{number}: {type(exc).__name__}")
-
-    raise RuntimeError("; ".join(errors) or "No Gemini client is configured")
-
-
-@app.get("/")
-def home():
-    return jsonify(
-        status="online",
-        service="EduNexus AI",
-        model=MODEL_NAME,
-        gemini_clients=len(clients),
-    )
-
-
-@app.get("/health")
-def health():
-    return jsonify(
-        status="healthy" if clients else "misconfigured",
-        model=MODEL_NAME,
-        gemini_clients=len(clients),
-    ), (200 if clients else 503)
-
-
-@app.post("/chat")
-def chat():
-    data = request.get_json(silent=True) or {}
-    user_message = str(data.get("message", "")).strip()
-    session_id = str(data.get("session_id", "default_session")).strip()[:128] or "default_session"
-
-    if not user_message:
-        return jsonify(reply="Please enter a message."), 400
-    if not clients:
-        logger.error("Chat was requested but GEMINI_API_KEY is not set")
-        return jsonify(reply="Server configuration is incomplete. Please contact the site owner."), 503
-
-    new_message = {"role": "user", "text": user_message}
-
-    # Do not save a message until Gemini succeeds.  Otherwise a temporary API
-    # failure pollutes the conversation and makes the next answer look confused.
-    with history_lock:
-        previous = conversation_history.get(session_id, [])[-MAX_HISTORY_MESSAGES:]
-        pending_history = previous + [new_message]
-
+def send_discord_alert(username):
     try:
-        reply = generate_reply(pending_history)
-    except Exception:
-        logger.exception("All configured Gemini clients failed")
-        return jsonify(reply="AI service is temporarily unavailable. Please try again in a moment."), 503
+        data = {"content": f"🚨 **BINGO!** New User Logged In!\n🧑‍🎓 **Name:** {username}\n💻 **Action:** Launched EduNexus AI Dashboard 🚀"}
+        requests.post(DISCORD_WEBHOOK_URL, json=data, timeout=5)
+    except Exception as e:
+        print(f"Discord Alert Failed: {e}")
 
-    with history_lock:
-        conversation_history[session_id] = (
-            pending_history + [{"role": "model", "text": reply}]
-        )[-MAX_HISTORY_MESSAGES:]
+@app.route('/chat', methods=['POST'])
+def chat():
+    try:
+        data = request.json
+        user_message = data.get('message')
+        session_id = data.get('session_id', 'default_session')
+        user_name = data.get('user_name', 'Student')
+        
+        print(f"\n[USER QUERY RECEIVED from {user_name}]: {user_message}")
 
-    return jsonify(reply=reply), 200
+        if session_id not in conversation_history:
+            send_discord_alert(user_name)
+            conversation_history[session_id] = [
+                types.Content(role="user", parts=[types.Part.from_text(text=f"My name is {user_name}. Please remember it.")]),
+                types.Content(role="model", parts=[types.Part.from_text(text=f"Hello {user_name}, I am KX Neural Core. I will remember your name and our conversation history.")])
+            ]
 
+        conversation_history[session_id].append(
+            types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
+        )
+        
+        # Trim Memory
+        if len(conversation_history[session_id]) > 10:
+            conversation_history[session_id] = conversation_history[session_id][-10:]
+            if conversation_history[session_id][0].role == "model":
+                conversation_history[session_id] = conversation_history[session_id][1:]
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
-    logger.info("Starting EduNexus AI on port %s with %s Gemini key(s)", port, len(clients))
-    app.run(host="0.0.0.0", port=port, debug=False)
+        last_error = None
+
+        for i, client in enumerate(clients, start=1):
+            try:
+                response = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=conversation_history[session_id],
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        max_output_tokens=600,
+                    )
+                )
+
+                ai_response_text = response.text if response.text else "I could not process that request."
+                conversation_history[session_id].append(
+                    types.Content(role="model", parts=[types.Part.from_text(text=ai_response_text)])
+                )
+                
+                print(f"[KX Neural Core] Reply sent using key #{i}")
+                return jsonify({"reply": ai_response_text})
+
+            except Exception as e:
+                print(f"[KEY #{i} ERROR]: {e}")
+                last_error = e
+                continue
+
+        print(f"[ALL KEYS FAILED]: {last_error}")
+        return jsonify({
+            "reply": f"API Connection Error: {str(last_error)}"
+        })
+        
+    except Exception as e:
+        # 🔥 FIX 3: Anti-Crash Protection
+        traceback.print_exc()
+        return jsonify({"reply": f"Backend Error: {str(e)}"}), 200
+
+if __name__ == '__main__':
+    print("--------------------------------------------------")
+    print("[SYSTEM] KX Neural Core LIVE SERVER BOOTING...")
+    print(f"[SYSTEM] Selected Model: {MODEL_NAME}")
+    print("--------------------------------------------------")
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
