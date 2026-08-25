@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 
 app = Flask(__name__)
 CORS(app)
@@ -23,20 +24,20 @@ clients = [genai.Client(api_key=k) for k in _raw_keys if k]
 if not clients:
     print("WARNING: Koi GEMINI_API_KEY set nahi hai!")
 
-# 🔥 FIX 1: Exact working model name. (No 3.5 Fake Model)
-MODEL_NAME = "gemini-1.5-flash"
+# 🔥 FIX 1: Tu aur Claude sahi the! 1.5 retire ho chuka hai. 3.5-flash-lite is the correct 2026 model!
+MODEL_NAME = "gemini-3.5-flash-lite"
 
 SYSTEM_PROMPT = (
     "You are EduNexus AI, powered by the KX Neural Core, a friendly and extremely smart study assistant for Indian Class 12 students "
     "(Physics, Chemistry, Maths, Computer Science, English). "
     "Keep answers SHORT and clear by default -- around 3 to 6 short sentences, "
     "or a few bullet points. Do not write long essays. "
-    "If the user asks for a Custom Quiz, act as a strict examiner, wait for their answers, "
-    "evaluate them in the next turn, and give them a score out of the total questions. "
-    "Use simple, exam-friendly language."
+    "If the student requests a custom quiz, act as a strict examiner: provide only "
+    "the requested questions and options first, wait for their answers, then mark them "
+    "and give them a score. Use simple, exam-friendly language."
 )
 
-# 🔥 FIX 2: Memory Store (Ghajini Problem Solved)
+# [SYSTEM] KX Core Conversation Memory Store
 conversation_history = {}
 
 def send_discord_alert(username):
@@ -58,16 +59,18 @@ def chat():
 
         if session_id not in conversation_history:
             send_discord_alert(user_name)
+            # Memory Start with User (Strict Google Rule)
             conversation_history[session_id] = [
                 types.Content(role="user", parts=[types.Part.from_text(text=f"My name is {user_name}. Please remember it.")]),
                 types.Content(role="model", parts=[types.Part.from_text(text=f"Hello {user_name}, I am KX Neural Core. I will remember your name and our conversation history.")])
             ]
 
+        # Sawaal Memory mein jodo
         conversation_history[session_id].append(
             types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
         )
         
-        # Trim Memory
+        # Memory Trim karo (Sirf last 10 yaad rakho taaki API rate limit na aaye)
         if len(conversation_history[session_id]) > 10:
             conversation_history[session_id] = conversation_history[session_id][-10:]
             if conversation_history[session_id][0].role == "model":
@@ -87,6 +90,8 @@ def chat():
                 )
 
                 ai_response_text = response.text if response.text else "I could not process that request."
+                
+                # Jawab Memory mein jodo
                 conversation_history[session_id].append(
                     types.Content(role="model", parts=[types.Part.from_text(text=ai_response_text)])
                 )
@@ -94,20 +99,27 @@ def chat():
                 print(f"[KX Neural Core] Reply sent using key #{i}")
                 return jsonify({"reply": ai_response_text})
 
-            except Exception as e:
-                print(f"[KEY #{i} ERROR]: {e}")
-                last_error = e
-                continue
+            except genai_errors.ClientError as e:
+                if getattr(e, "code", None) == 429:
+                    print(f"[QUOTA HIT on key #{i}] trying next key if available...")
+                    last_error = e
+                    continue
+                
+                print(f"[CLIENT ERROR DETAILS]: {e}")
+                return jsonify({"reply": f"API Error: {str(e)}"})
 
-        print(f"[ALL KEYS FAILED]: {last_error}")
+            except Exception as e:
+                print(f"[SERVER ERROR DETAILS]: {e}")
+                return jsonify({"reply": f"Server Error: {str(e)}"})
+
+        print(f"[ALL KEYS EXHAUSTED]: {last_error}")
         return jsonify({
-            "reply": f"API Connection Error: {str(last_error)}"
+            "reply": "⏳ Aaj ke liye AI Engine ka free limit khatam ho gaya hai. Kal try karna!"
         })
         
     except Exception as e:
-        # 🔥 FIX 3: Anti-Crash Protection
         traceback.print_exc()
-        return jsonify({"reply": f"Backend Error: {str(e)}"}), 200
+        return jsonify({"reply": f"Backend Crash: {str(e)}"}), 200
 
 if __name__ == '__main__':
     print("--------------------------------------------------")
