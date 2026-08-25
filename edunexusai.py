@@ -71,8 +71,8 @@ def chat():
         )
         
         # Memory Trim karo (Sirf last 10 yaad rakho taaki API rate limit na aaye)
-        if len(conversation_history[session_id]) > 10:
-            conversation_history[session_id] = conversation_history[session_id][-10:]
+        if len(conversation_history[session_id]) > 60:
+            conversation_history[session_id] = conversation_history[session_id][-60:]
             if conversation_history[session_id][0].role == "model":
                 conversation_history[session_id] = conversation_history[session_id][1:]
 
