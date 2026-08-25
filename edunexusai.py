@@ -23,7 +23,8 @@ clients = [genai.Client(api_key=k) for k in _raw_keys if k]
 if not clients:
     raise RuntimeError("No GEMINI_API_KEY is set in the Environment Variables!")
 
-MODEL_NAME = "gemini-2.5-flash"
+# 🔥 THE FIX: Using the highly efficient, higher-limit model!
+MODEL_NAME = "gemini-3.5-flash-lite"
 
 SYSTEM_PROMPT = (
     "You are EduNexus AI, powered by the KX Neural Core, a friendly and extremely smart study assistant for Indian Class 12 students "
@@ -59,20 +60,26 @@ def chat():
     if session_id not in conversation_history:
         send_discord_alert(user_name)
         # Initialize memory for new session
-        conversation_history[session_id] = [{"role": "user", "parts": [{"text": f"My name is {user_name}. Please remember it."}]}, {"role": "model", "parts": [{"text": f"Hello {user_name}, I am KX Neural Core. I will remember your name and our conversation history."}]}]
+        conversation_history[session_id] = [
+            {"role": "user", "parts": [{"text": f"My name is {user_name}. Please remember it."}]},
+            {"role": "model", "parts": [{"text": f"Hello {user_name}, I am KX Neural Core. I will remember your name and our conversation history."}]}
+        ]
 
     # Append new user message to memory
     conversation_history[session_id].append({"role": "user", "parts": [{"text": user_message}]})
     
-    # Keep memory size manageable (last 10 interactions) to avoid token limits
+    # Bulletproof Memory Trimming (API Strict Rule: MUST start with 'user')
     if len(conversation_history[session_id]) > 10:
         conversation_history[session_id] = conversation_history[session_id][-10:]
+        # Agar cut hone ke baad list 'model' se start ho rahi hai, toh pehla item uda do
+        if conversation_history[session_id][0]["role"] == "model":
+            conversation_history[session_id] = conversation_history[session_id][1:]
 
     last_error = None
 
     for i, client in enumerate(clients, start=1):
         try:
-            # Pass the entire conversation history instead of just one message
+            # Pass the entire conversation history to Gemini
             response = client.models.generate_content(
                 model=MODEL_NAME,
                 contents=conversation_history[session_id],
@@ -93,11 +100,12 @@ def chat():
                 print(f"[QUOTA HIT on key #{i}] trying next key if available...")
                 last_error = e
                 continue
-            print(f"[ERROR DETAILS]: {e}")
+            
+            print(f"[CLIENT ERROR DETAILS]: {e}")
             return jsonify({"reply": "Oops! Something went wrong. Please try again later!"})
 
         except Exception as e:
-            print(f"[ERROR DETAILS]: {e}")
+            print(f"[SERVER ERROR DETAILS]: {e}")
             return jsonify({"reply": "Oops! The KX Neural Core is overloaded. Please try again later!"})
 
     print(f"[ALL KEYS EXHAUSTED]: {last_error}")
@@ -109,7 +117,14 @@ if __name__ == '__main__':
     print("--------------------------------------------------")
     print("[SYSTEM] KX Neural Core LIVE SERVER BOOTING...")
     print(f"[SYSTEM] {len(clients)} API key(s) loaded in the fallback pool")
+    print(f"[SYSTEM] Selected Model: {MODEL_NAME}")
     print("[SYSTEM] Ready to receive frontend requests with Memory enabled")
     print("--------------------------------------------------")
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
+
+
+
+
+
