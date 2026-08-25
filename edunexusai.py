@@ -5,7 +5,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google import genai
 from google.genai import types
-from google.genai import errors as genai_errors
 
 app = Flask(__name__)
 CORS(app)
@@ -24,7 +23,7 @@ clients = [genai.Client(api_key=k) for k in _raw_keys if k]
 if not clients:
     print("WARNING: Koi GEMINI_API_KEY set nahi hai!")
 
-# 🔥 FIX 1: Claude ne galat bola tha. Gemini 3.5 exist nahi karta! Sahi model name 1.5-flash hai.
+# 🔥 Naye SDK ke liye standard model string
 MODEL_NAME = "gemini-1.5-flash"
 
 SYSTEM_PROMPT = (
@@ -76,6 +75,7 @@ def chat():
 
         for i, client in enumerate(clients, start=1):
             try:
+                # 🔥 Clean generate content call compatible with new google-genai library
                 response = client.models.generate_content(
                     model=MODEL_NAME,
                     contents=conversation_history[session_id],
@@ -93,23 +93,14 @@ def chat():
                 print(f"[KX Neural Core] Reply sent using key #{i}")
                 return jsonify({"reply": ai_response_text})
 
-            except genai_errors.ClientError as e:
-                if getattr(e, "code", None) == 429:
-                    print(f"[QUOTA HIT on key #{i}] trying next key if available...")
-                    last_error = e
-                    continue
-                
-                # 🔥 FIX 2: Ab agar Model exist nahi karta ya koi aur error aayi, toh seedha woh error dikhayega, fake limit message nahi.
-                print(f"[CLIENT ERROR DETAILS]: {e}")
-                return jsonify({"reply": f"API Error Details: {str(e)}"})
-
             except Exception as e:
-                print(f"[SERVER ERROR DETAILS]: {e}")
-                return jsonify({"reply": f"Server Error: {str(e)}"})
+                print(f"[KEY #{i} ERROR]: {e}")
+                last_error = e
+                continue
 
-        print(f"[ALL KEYS EXHAUSTED]: {last_error}")
+        print(f"[ALL KEYS FAILED]: {last_error}")
         return jsonify({
-            "reply": "⏳ Aaj ke liye AI Engine ka free limit khatam ho gaya hai. Kal try karna!"
+            "reply": f"API Connection Error: {str(last_error)}"
         })
         
     except Exception as e:
